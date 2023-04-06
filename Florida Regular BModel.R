@@ -47,11 +47,33 @@ SalaryGrowth <- read_excel(FileName, sheet = "Salary Growth")#Updated* (How to c
 WithdrawalRates <- read_excel(FileName, sheet = 'Withdrawal Rates')#Updated*
 RetirementRates <- read_excel(FileName, sheet = 'Retirement Rates')#Updated*
 
-SalaryMatrix <- read_excel(FileName, sheet = "Salary Distribution")
-HeadCountMatrix <- read_excel(FileName, sheet = "HeadCount Distribution")
+SalaryMatrix <- read_excel(FileName, sheet = "Salary Distribution Regular")
+HeadCountMatrix <- read_excel(FileName, sheet = "HeadCount Distribution Regular")
 
+
+SalaryMatrix_long <- SalaryMatrix %>% 
+  pivot_longer(cols = -1, names_to = "YOS", values_to = "Salary")
+HeadCountMatrix_long <- HeadCountMatrix %>% 
+  pivot_longer(cols = -1, names_to = "YOS", values_to = "Count")
+
+SalaryHeadCountData <- SalaryMatrix_long %>%
+  left_join(HeadCountMatrix_long) %>% 
+  replace(is.na(.), 0) %>% 
+  mutate(YOS = as.numeric(YOS),
+         CurrentYear = YearStart,
+         entry_age = Age - YOS,
+         EntryYear = CurrentYear - YOS) %>% 
+  filter(Salary > 0, entry_age >= 18)
+
+#Salary entry is the starting salary data 
+SalaryEntry <- SalaryHeadCountData %>%  
+  filter(YOS == 0) %>% 
+  select(entry_age, CurrentYear, Salary, Count) %>% 
+  mutate(entrant_dist = Count/sum(Count)) %>% 
+  rename(start_sal = Salary)
 
 ##############################################################################################################################
+
 IsRetirementEligible_Normal <- function(Age, YOS, EntryYear){
   Check_Regular_Tier1 = ifelse(YOS >= 30 | (Age >= 62 & YOS >= 6), TRUE, FALSE)
   Check_Regular_Tier2 = ifelse(YOS >= 33 | (Age >= 65 & YOS >= 8), TRUE, FALSE)
@@ -69,23 +91,27 @@ IsRetirementEligible_Early <- function(Age, YOS, EntryYear){
 }
 
 IsRetirementEligible <- function(Age, YOS, EntryYear){
-  Check = ifelse(IsRetirementEligible_Regular(Age, YOS, RetYear) | IsRetirementEligible_Early(Age, YOS, RetYear), TRUE, FALSE)
+  Check = ifelse(IsRetirementEligible_Normal(Age, YOS, EntryYear) | IsRetirementEligible_Early(Age, YOS, EntryYear), TRUE, FALSE)
   
   return(Check)
 }
 
 RetirementType <- function(Age, YOS, EntryYear){
   
-  Check = ifelse(IsRetirementEligible_Regular(Age, YOS, RetYear), 'Regular',
-                 ifelse(IsRetirementEligible_Early(Age, YOS, RetYear), 'Early','None'))
+  Check = ifelse(IsRetirementEligible_Normal(Age, YOS, EntryYear), 'Regular',
+                 ifelse(IsRetirementEligible_Early(Age, YOS, EntryYear), 'Early','None'))
   
   return(Check)
 }
 
 
-SeparationType <- function(Age, YOS, RetYear){
-  Check = ifelse(IsRetirementEligible(Age, YOS, RetYear) == T, 'Retirement',
-                 ifelse(YOS > 5, 'Termination Vested', 'Termination Non-Vested'))
+SeparationType <- function(Age, YOS, EntryYear){
+  Vested_Tier1 = ifelse(YOS >= 6, 'Termination Vested', 'Termination Non-Vested')
+  Vested_Tier2 = ifelse(YOS >= 8, 'Termination Vested', 'Termination Non-Vested')
+  
+  Check = ifelse(IsRetirementEligible_Normal(Age, YOS, EntryYear) == T, 'Normal Retirement',
+                 ifelse(IsRetirementEligible_Early(Age, YOS, EntryYear) == T, 'Early Retirement',
+                        ifelse(EntryYear < 2011, Vested_Tier1, Vested_Tier2)))
   
   return(Check)
 }
@@ -143,28 +169,25 @@ CompoundSalaryIncrease <- function(Data){
 
 ##############################################################################################################################
 
-#These rates dont change so they're outside the function
-#Transform base mortality rates and mortality improvement rates
 MaleMP <- MaleMP %>% 
   pivot_longer(-Age, names_to = "Years", values_to = "MP_male") %>% 
   mutate(Years = as.numeric(Years))
 
-MaleMP_ultimate <- MaleMP %>%       #ultimate rates = rates for the last year in the MP table
+MaleMP_ultimate <- MaleMP %>%        #ultimate rates = rates for the last year in the MP table
   filter(Years == max(Years)) %>% 
   rename(MP_ultimate_male = MP_male) %>% 
   select(-Years)
 
-#Starts with 1951 for MP improvement scales
-MaleMP_final <- expand_grid(Age, Years = 1951:max(Years)) %>% 
+MaleMP_final <- expand_grid(Age, Years = 1951:MaxYear) %>% 
   left_join(MaleMP, by = c("Age", "Years")) %>% 
   left_join(MaleMP_ultimate, by = "Age") %>% 
-  mutate(MP_final_male = ifelse(Years > max(MaleMP$Years), MP_ultimate_male, MP_male)) %>% 
+  mutate(
+    # MP_final_male = ifelse(Years > max(MaleMP$Years), MP_ultimate_male, MP_male)   
+    #Since the plan assumes "immediate convergence" of MP rates, the "ultimate rates" are used for all years
+    MP_final_male = MP_ultimate_male) %>% 
   group_by(Age) %>% 
-  
   mutate(MPcumprod_male_raw = cumprod(1 - MP_final_male),
-         #The adjusted value is the ratio of the original value and the anchor point
-         #in this case 2014 to help us find MP values before 2014
-         MPcumprod_male_adj = MPcumprod_male_raw / MPcumprod_male_raw[Years == 2014]) %>%
+         MPcumprod_male_adj = MPcumprod_male_raw / MPcumprod_male_raw[Years == 2010]) %>%   #Adjust the mort improvement rates for the 2014 base year
   ungroup()
 
 
@@ -177,28 +200,25 @@ FemaleMP_ultimate <- FemaleMP %>%
   rename(MP_ultimate_female = MP_female) %>% 
   select(-Years)
 
-FemaleMP_final <- expand_grid(Age, Years = 1951:max(Years)) %>% 
+FemaleMP_final <- expand_grid(Age, Years = 1951:MaxYear) %>% 
   left_join(FemaleMP, by = c("Age", "Years")) %>% 
   left_join(FemaleMP_ultimate, by = "Age") %>% 
-  mutate(MP_final_female = ifelse(Years > max(FemaleMP$Years), MP_ultimate_female, MP_female)) %>%
+  mutate(
+    # MP_final_female = ifelse(Years > max(FemaleMP$Years), MP_ultimate_female, MP_female)
+    #Since the plan assumes "immediate convergence" of MP rates, the "ultimate rates" are used for all years
+    MP_final_female = MP_ultimate_female
+  ) %>%
   group_by(Age) %>% 
   mutate(MPcumprod_female_raw = cumprod(1 - MP_final_female),
-         MPcumprod_female_adj = MPcumprod_female_raw / MPcumprod_female_raw[Years == 2014]) %>% 
+         MPcumprod_female_adj = MPcumprod_female_raw / MPcumprod_female_raw[Years == 2010]) %>% 
   ungroup()
 
-
-##Mortality calculations
-#Expand grid for ages 20-120 and years 2010 to 2121 (why 2121? Because 120 - 20 + 2021 = 2121)
-MortalityTable_int <- expand_grid(EntryYear, Age, Years, YOS)
-
-MortalityTable_int <- MortalityTable_int %>% 
+MortalityTable_int <- expand_grid(EntryYear, entry_age = SalaryEntry$entry_age, Age, YOS) %>% 
   mutate(term_year = EntryYear + YOS,
-         entry_age = Age - (Years - EntryYear),
-         #Years is the same as retirement years
-         RetYear = Years)  %>% 
-  filter(term_year <= Years,
-         entry_age %in% SalaryHeadCountData$entry_age) %>% 
+         Years = EntryYear + Age - entry_age) %>% 
+  filter(term_year <= Years) %>% 
   arrange(EntryYear, entry_age, YOS, Age)
+
 
 #Join base mortality table with mortality improvement table and calculate the final mortality rates
 MortalityTable <- MortalityTable_int %>% 
@@ -206,19 +226,18 @@ MortalityTable <- MortalityTable_int %>%
   left_join(MaleMP_final, by = c("Age", "Years")) %>% 
   left_join(FemaleMP_final, by = c("Age", "Years")) %>% 
   
-  mutate(RetirementCond = IsRetirementEligible(Age, YOS, RetYear),
-         ScaleMultiple = ifelse(Age <= 69, 0.5,
-                                ifelse(Age <= 79, 0.7,
-                                       ifelse(Age <= 84, 0.9, 1))),
-         mort_male = ifelse(RetirementCond == F, RP2014_employee_male * ScaleMultiple, #Adding adj. facctors
-                            RP2014_healthy_retiree_male * ScaleMultiple) * MPcumprod_male_adj,
-         mort_female = ifelse(RetirementCond == F, RP2014_employee_female * ScaleMultiple,
-                              RP2014_healthy_retiree_female * ScaleMultiple) * MPcumprod_female_adj,
-         mort = (mort_male + mort_female)/2)
+  #MPcumprod is the cumulative product of (1 - MP rates), starting from 2011. We use it later so make life easy and calculate now
+  mutate(RetirementCond = IsRetirementEligible(Age, YOS, EntryYear),
+    mort_male = ifelse(RetirementCond == T, Pub2010_healthy_retiree_male, 
+                       Pub2010_employee_male * ScaleMultiple) * MPcumprod_male_adj, 
+    mort_female = ifelse(RetirementCond == T, Pub2010_healthy_retiree_female, 
+                         Pub2010_employee_female * ScaleMultiple) * MPcumprod_female_adj,
+    mort = (mort_male + mort_female)/2)
 
 #filter out the necessary variables
-MortalityTable <- MortalityTable %>% select(EntryYear, term_year, RetYear, entry_age, Age, YOS, mort)
-#arrange(RetYear, entry_age) 
+MortalityTable <- MortalityTable %>% 
+  select(EntryYear, term_year, Years, entry_age, Age, YOS, mort)
+
 
 #Create a second mortality table for current retirees
 MortalityTable_retire <- expand_grid(Age = Age[Age >= 40], Years = Years[Years >= YearStart]) %>% 
@@ -226,8 +245,8 @@ MortalityTable_retire <- expand_grid(Age = Age[Age >= 40], Years = Years[Years >
   left_join(MaleMP_final, by = c("Age", "Years")) %>% 
   left_join(FemaleMP_final, by = c("Age", "Years")) %>% 
   mutate(base_age = Age - (Years - YearStart),
-         mort_male = RP2014_healthy_retiree_male * MPcumprod_male_adj,
-         mort_female = RP2014_healthy_retiree_female * MPcumprod_female_adj,
+         mort_male = Pub2010_employee_male * MPcumprod_male_adj,
+         mort_female = Pub2010_employee_female * MPcumprod_female_adj,
          mort = (mort_male + mort_female)/2) %>% 
   select(base_age, Age, Years, mort) %>% 
   filter(base_age >= 40) %>% 
@@ -239,11 +258,10 @@ MortalityTable_retire <- expand_grid(Age = Age[Age >= 40], Years = Years[Years >
 SeparationRates <- expand_grid(EntryYear, Age, YOS) 
 SeparationRates <- SeparationRates %>%
   mutate(entry_age = Age - YOS,
-         RetYear = EntryYear + YOS) %>% 
-  filter(entry_age %in% SalaryHeadCountData$entry_age) %>% 
+         Years = EntryYear + YOS) %>% 
+  filter(entry_age %in% SalaryEntry$entry_age) %>% 
   arrange(EntryYear, entry_age, Age) %>% 
-  left_join(TerminationRateVested, by = "Age") %>%
-  left_join(TerminationRateNonVested, by = "YOS") %>%
+  left_join(WithdrawalRates, by = "YOS") %>%
   left_join(RetirementRates, by = "Age") %>%
   ### Additions ###
   #mutate_all(as.numeric) %>% 
@@ -251,30 +269,45 @@ SeparationRates <- SeparationRates %>%
 
 #If you're retirement eligible, use the retirement rates, then checks YOS < 5 and use the regular termination rates
 SeparationRates <- SeparationRates %>% 
-  mutate(retirement_type = IsRetirementEligible(Age,YOS, RetYear),
+  mutate(retirement_regular = IsRetirementEligible_Normal(Age,YOS, EntryYear),
+         retirement_early = IsRetirementEligible_Early(Age,YOS, EntryYear),
          
-         SepMaleRet = ifelse(YOS <= 25, MaleCurrentHire_Less25YOS,
-                             ifelse(YOS <= 29, MaleCurrentHire_2529YOS,
-                                    ifelse(YOS <= 34, MaleCurrentHire_3034YOS, MaleCurrentHire_More35YOS))),
+         SepRate_Withdrawal_Male = ifelse(YOS < 25, Regular_Male_Under25,
+                                          ifelse(YOS >= 25 & YOS < 29, Regular_Male_25to29,
+                                                 ifelse(YOS >= 29 & YOS < 34, Regular_Male_30to34,
+                                                        ifelse(YOS >= 35 & YOS < 44, Regular_Male_35to44,
+                                                               ifelse(YOS >= 45 & YOS < 54, Regular_Male_45to54,
+                                                                      ifelse(YOS >= 55, Regular_Male_55, 0)))))),
          
-         SepRateMale = ifelse(retirement_type == T, SepMaleRet,
-                              ifelse(YOS < 5, NonTermVest_Male,TermVest_Male)),
+         SepRate_Withdrawal_Female = ifelse(YOS < 25, Regular_Female_Under25,
+                                            ifelse(YOS >= 25 & YOS < 29, Regular_Female_25to29,
+                                                   ifelse(YOS >= 29 & YOS < 34, Regular_Female_30to34,
+                                                          ifelse(YOS >= 35 & YOS < 44, Regular_Female_35to44,
+                                                                 ifelse(YOS >= 45 & YOS < 54, Regular_Female_45to54,
+                                                                        ifelse(YOS >= 55, Regular_Female_55, 0)))))),
          
-         SepFemaleRet = ifelse(YOS <= 25, FemaleCurrentHire_Less25YOS,
-                               ifelse(YOS <= 29, FemaleCurrentHire_2529YOS,
-                                      ifelse(YOS <= 34, FemaleCurrentHire_3034YOS, FemaleCurrentHire_More35YOS))),
+         SepRate_Retire_Male_Tier1 = ifelse(retirement_early == T, Regular_K12_Tier1_DROP_Male + Regular_NonK12_Tier1_DROP_Male,
+                                            ifelse(retirement_regular == T, Regular_NonK12_Tier1_NonDROP_Male, SepRate_Withdrawal_Male)),
+         SepRate_Retire_Male_Tier2 = ifelse(retirement_early == T, Regular_K12_Tier2_DROP_Male + Regular_NonK12_Tier2_DROP_Male,
+                                            ifelse(retirement_regular == T, Regular_NonK12_Tier2_NonDROP_Male, SepRate_Withdrawal_Male)),
          
-         SepRateFemale = ifelse(retirement_type == T, SepFemaleRet,
-                                ifelse(YOS < 5, NonTermVest_Female,TermVest_Female)),
          
-         SepRate = (SepRateMale + SepRateFemale)/2) %>% 
+         SepRate_Retire_Female_Tier1 = ifelse(retirement_early == T, Regular_K12_Tier1_DROP_Female + Regular_NonK12_Tier1_DROP_Female,
+                                              ifelse(retirement_regular == T, Regular_NonK12_Tier1_NonDROP_Female, SepRate_Withdrawal_Female)),
+         SepRate_Retire_Female_Tier2 = ifelse(retirement_early == T, Regular_K12_Tier2_DROP_Female + Regular_NonK12_Tier2_DROP_Female,
+                                              ifelse(retirement_regular == T, Regular_NonK12_Tier2_NonDROP_Female, SepRate_Withdrawal_Female)),
+         
+         
+         
+         SepRate_DB = ifelse(EntryYear < 2011, (SepRate_Retire_Male_Tier1 + SepRate_Retire_Female_Tier1) / 2, 
+                             (SepRate_Retire_Male_Tier2 + SepRate_Retire_Female_Tier2) / 2)) %>% 
   group_by(EntryYear, entry_age) %>% 
-  mutate(RemainingProb = cumprod(1 - lag(SepRate, default = 0)),
-         SepProb = lag(RemainingProb, default = 1) - RemainingProb) %>% 
+  mutate(RemainingProb_DB = cumprod(1 - lag(SepRate_DB, default = 0)),
+         SepProb_DB = lag(RemainingProb_DB, default = 1) - RemainingProb_DB) %>% 
   ungroup()
 
 #Filter out unecessary values
-SeparationRates <- SeparationRates %>% select(EntryYear, entry_age, RetYear, Age, YOS, RemainingProb, SepProb, SepRate)
+SeparationRates <- SeparationRates %>% select(EntryYear, entry_age, Years, Age, YOS, RemainingProb_DB, SepProb_DB, SepRate_DB)
 
 ##############################################################################################################################
 
@@ -285,26 +318,25 @@ SalaryData <- expand_grid(EntryYear, Age, YOS) %>%
   filter(entry_age %in% SalaryEntry$entry_age) %>% 
   arrange(EntryYear, entry_age, YOS)
 SalaryData <- left_join(SalaryData, SalaryEntry, by = c("entry_age"))
-SalaryData <- left_join(SalaryData, SalaryGrowth, by = c("Age"))
+SalaryData <- left_join(SalaryData, SalaryGrowth, by = c("YOS"))
 
 SalaryData <- SalaryData %>%
   group_by(EntryYear, entry_age) %>%
-  mutate(Salary = start_sal*cumprod(1+lag(salary_increase,default = 0))*(1 + payroll_growth)^(Years - YOS - YearStart),
+  mutate(Salary = start_sal*cumprod(1+lag(salary_increase_regular,default = 0))*(1 + payroll_growth)^(Years - YOS - YearStart),
          #Salary = start_sal*salary_increase_compound*(1 + payroll_growth)^(Years - YOS - YearStart),
-         FinalAvgSalary_3YR = rollmean(lag(Salary), k = 3, fill = NA, align = "right"),
          FinalAvgSalary_5YR = rollmean(lag(Salary), k = 5, fill = NA, align = "right"),
+         FinalAvgSalary_8YR = rollmean(lag(Salary), k = 8, fill = NA, align = "right"),
          #DB_EEContrib = (DB_EE_cont + DC_DB_EE_cont)*Salary,
-         DB_EEContrib = DB_EE_cont*Salary,
-         DBEEBalance = ifelse(YOS < 3, cumFV(0.02, DB_EEContrib),
-                              ifelse(YOS >=3 & YOS < 5, cumFV(0.03, DB_EEContrib),
-                                     cumFV(0.03, 1.5*DB_EEContrib))),
+         DB_EEContrib = DB_EE_cont_Regular*Salary,
+         DBEEBalance = ifelse(EntryYear < 2011, cumFV(Interest_Tier1, DB_EEContrib), cumFV(Interest_Tier2, DB_EEContrib)),
          DC_EEBalance = DC_EE_cont*Salary,
-         DC_ERBalance = 0.2*DC_ER_cont*Salary,
-         CBEEContAmount = CB_EE_paycredit * Salary,
-         CBERContAmount = CB_ER_paycredit * Salary,
-         CBEEBalance = cumFV(ICR, CBEEContAmount),
-         CBERBalance = cumFV(ICR, CBERContAmount),
-         CBBalance = CBEEBalance + ifelse(YOS >= CB_vesting, CBERBalance, 0),
+         
+         #DC_ERBalance = 0.2*DC_ER_cont*Salary,
+         #CBEEContAmount = CB_EE_paycredit * Salary,
+         #CBERContAmount = CB_ER_paycredit * Salary,
+         #CBEEBalance = cumFV(ICR, CBEEContAmount),
+         #CBERBalance = cumFV(ICR, CBERContAmount),
+         #CBBalance = CBEEBalance + ifelse(YOS >= CB_vesting, CBERBalance, 0),
          CumulativeWage = cumFV(ARR, Salary)) %>% 
   ungroup()
 
@@ -314,12 +346,12 @@ AnnFactorData <- MortalityTable %>%
   group_by(EntryYear, entry_age, YOS) %>% 
   mutate(surv = cumprod(1 - lag(mort, default = 0)),
          surv_DR = surv/(1 + ARR)^(Age - min(Age)),
-         surv_ICR = surv/(1 + ICR)^(Age - min(Age)),
-         surv_ACR = surv/(1 + ACR)^(Age - min(Age)),
+         #surv_ICR = surv/(1 + ICR)^(Age - min(Age)),
+         #surv_ACR = surv/(1 + ACR)^(Age - min(Age)),
          surv_DR_COLA = surv_DR * (1 + COLA)^(Age - min(Age)),
-         surv_ACR_COLA = surv_ACR * (1 + COLA)^(Age - min(Age)),
-         AnnuityFactor_DR = rev(cumsum(rev(surv_DR_COLA)))/surv_DR_COLA,
-         AnnuityFactor_ACR = rev(cumsum(rev(surv_ACR_COLA)))/surv_ACR_COLA) %>% 
+         #surv_ACR_COLA = surv_ACR * (1 + COLA)^(Age - min(Age)),
+         #AnnuityFactor_ACR = rev(cumsum(rev(surv_ACR_COLA)))/surv_ACR_COLA,
+         AnnuityFactor_DR = rev(cumsum(rev(surv_DR_COLA)))/surv_DR_COLA) %>% 
   ungroup()
 
 #Survival Probability and Annuity Factor for retirees
@@ -332,17 +364,14 @@ AnnFactorData_retire <- MortalityTable_retire %>%
 
 ##############################################################################################################################
 
-ReducedFactor <- expand_grid(Age, YOS, RetYear) %>% 
-  left_join(EarlyRetirement_Before2015, by = c("Age", "YOS")) %>%
-  left_join(EarlyRetirement_After2015, by = c("Age", "YOS")) %>%
+ReducedFactor <- expand_grid(Age, YOS, EntryYear) %>% 
+  left_join(AnnFactorData, by = c("EntryYear" ,"Age", "YOS")) %>%
   replace(is.na(.), 0) %>% 
   filter(Age >= YOS) %>%
-  #group_by(RetYear, Age, YOS) %>% 
-  mutate(RetType = RetirementType(Age, YOS, RetYear),
-         RF_Before2015 = ifelse(RetType == "Early", EarlyRetPct_Before2015,
-                                ifelse(RetType == "None", 0, 1)),
-         RF_After2015 = ifelse(RetType == "Early", EarlyRetPct_After2015/100/(YOS*BenMult_DB),
-                               ifelse(RetType == "None", 0, 1))) %>% 
+  group_by(EntryYear, Age, YOS) %>% 
+  mutate(RetType = IsRetirementEligible_Early(Age, YOS, EntryYear),
+         RF = ifelse(RetType == T, 1 - YOS*(5/12/100),
+                     ifelse(RetType == "None", 0, 1))) %>% 
   rename(RetirementAge = Age) %>% 
   ungroup()
 
@@ -351,22 +380,30 @@ BenefitsTable <- AnnFactorData %>%
   rename(RetirementAge = Age) %>%
   mutate(term_age = entry_age + YOS) %>%
   left_join(SalaryData, by = c("term_age" = "Age", "YOS", "term_year" = "Years", "entry_age", "EntryYear")) %>% 
-  left_join(RetirementMultipliers, by = c("YOS")) %>%
-  left_join(ReducedFactor %>% select(RetirementAge, YOS, RF_After2015, RF_Before2015, RetYear), by = c("RetirementAge", "YOS", "RetYear")) %>%
-  
+  left_join(ReducedFactor %>% select(RetirementAge, YOS, RF, EntryYear), by = c("RetirementAge", "YOS", "EntryYear")) %>%
+  rename(surv_DR_ret = surv_DR, AF_Ret = AnnuityFactor_DR) %>% 
   # YOS is in the benefit section because of graded multipliers
-  mutate(BaseBenefit1 = ifelse(YOS >= 35, Cumuative_Mult_2015*FinalAvgSalary_3YR, 0.022*FinalAvgSalary_3YR*YOS),
-         BaseBenefit2 = 86*YOS,
-         RF = ifelse(RetYear < 2015, RF_Before2015, RF_After2015/YOS),
-         Benefit = ifelse(RetYear < 2015, pmax(BaseBenefit1,BaseBenefit2), 
-                          BenMult_DB*FinalAvgSalary_5YR*YOS),
-         AnnFactorAdj_DB = AnnuityFactor_DR * surv_DR,
+  mutate(BenMult_Tier1 = ifelse(YOS >= 30 | (Age >= 62 & YOS >= 6), 0.016,
+                                ifelse(YOS >= 31 | (Age >= 63 & YOS >= 6), 0.0163,
+                                       ifelse(YOS >= 32 | (Age >= 64 & YOS >= 6), 0.0165,
+                                              ifelse(YOS >= 33 | (Age >= 65 & YOS >= 6), 0.0168, 0.02)))),
+         
+         BenMult_Tier2 = ifelse(YOS >= 33 | (Age >= 65 & YOS >= 8), 0.016,
+                                ifelse(YOS >= 34 | (Age >= 66 & YOS >= 8), 0.0163,
+                                       ifelse(YOS >= 35 | (Age >= 67 & YOS >= 8), 0.0165,
+                                              ifelse(YOS >= 36 | (Age >= 68 & YOS >= 8), 0.0168, 0.02)))),
+         
+         Multiplier_YOS = ifelse(EntryYear < 2011, BenMult_Tier1*YOS, BenMult_Tier2*YOS),
+         Benefit1 = ifelse(EntryYear < 2011, pmax(Multiplier_YOS,1)*FinalAvgSalary_5YR, pmax(Multiplier_YOS,1)*FinalAvgSalary_8YR),
+         Benefit2 = 36.34*12*YOS,
+         Benefit = pmax(Benefit1, Benefit2),
+         AnnFactorAdj_DB = AF_Ret*surv_DR_ret / surv,
+         #AnnFactorAdj_DB = AnnuityFactor_DR * surv_DR,
          DB_Benefit = RF * Benefit,
-         PV_DB_Benefit = DB_Benefit*AnnFactorAdj_DB,
-         CBBalance_final = CBBalance / surv_ICR,                                                       #project the cash balance forward to the annuitization day 
-         CB_Benefit = CBBalance_final / AnnuityFactor_ACR,                                             #annuitize the final cash balance
-         PV_CB_Benefit = ifelse(YOS >= CB_vesting, CB_Benefit * AnnFactorAdj_DB, CBBalance))
-  # replace(is.na(.), 0)
+         PV_DB_Benefit = DB_Benefit*AnnFactorAdj_DB)
+#CBBalance_final = CBBalance / surv_ICR,                                                       #project the cash balance forward to the annuitization day 
+#CB_Benefit = CBBalance_final / AnnuityFactor_ACR)
+# replace(is.na(.), 0)
 
 
 #For a given combination of entry age and termination age, the member is assumed to choose the retirement age that maximizes the PV of future retirement benefits. That value is the "optimum benefit". 
@@ -377,7 +414,6 @@ BenefitsTable <- AnnFactorData %>%
 #   ungroup()
 
 
-#For a given combination of entry year, entry age and termination age, the DB member is assumed to choose the retirement age that maximizes the PV of future retirement benefits. That value is the "optimum benefit". 
 OptimumBenefit_DB <- BenefitsTable %>% 
   group_by(EntryYear, entry_age, term_age) %>% 
   summarise(Max_PV_DB = max(PV_DB_Benefit)) %>%
@@ -389,11 +425,6 @@ OptimumBenefit_DB <- BenefitsTable %>%
   select(EntryYear, entry_age, term_age, RetirementAge, Max_PV_DB) %>% 
   mutate(RetirementAge = ifelse(is.na(RetirementAge), term_age, RetirementAge))    #Assume retire age = term age for non-vested members
 
-#Using the DB "optimal retirement ages" as retirement ages for the CB plan members
-OptimumBenefit_CB <- BenefitsTable %>% 
-  semi_join(OptimumBenefit_DB) %>% 
-  select(EntryYear, entry_age, term_age, RetirementAge, PV_CB_Benefit)
-
 ##################################################################################################
 
 ####### Benefit Accrual & Normal Cost #######
@@ -402,88 +433,45 @@ OptimumBenefit_CB <- BenefitsTable %>%
 #Combine optimal benefit with employee balance and calculate the PV of future benefits and salaries 
 #####################################
 
-# source("utility_functions.R")
-Balance_Benefit_Split <- 0.5
+source("utility_functions.R")
 FinalData <- SalaryData %>% 
   left_join(OptimumBenefit_DB, by = c("EntryYear", "entry_age", "Age" = "term_age")) %>% 
-  left_join(OptimumBenefit_CB, by = c("EntryYear", "entry_age", "Age" = "term_age", "RetirementAge")) %>% 
-  left_join(SeparationRates, by = c("EntryYear", "Age", "YOS", "entry_age", "Years" = "RetYear")) %>%
+  #left_join(OptimumBenefit_CB, by = c("EntryYear", "entry_age", "Age" = "term_age", "RetirementAge")) %>% 
+  left_join(SeparationRates, by = c("EntryYear", "Age", "YOS", "entry_age", "Years")) %>%
   group_by(EntryYear, entry_age) %>%
-  mutate(SepType = SeparationType(Age,YOS, Years),
-         DBWealth = ifelse(SepType == 'Retirement', pmax(DBEEBalance,Max_PV_DB), 
-                            ifelse(SepType == 'Termination Vested', Balance_Benefit_Split*DBEEBalance + (1-Balance_Benefit_Split)*Max_PV_DB, DBEEBalance)),
-         
-         #DBWealth = pmax(DBEEBalance,Max_PV_DB),
-         #PenWealth = pmax(DBEEBalance,MaxBenefit),  #50% lump sum, 50% optimal retirement
-         #PenWealth = 0.5*(DBEEBalance + MaxBenefit),
-         RealPenWealth = DBWealth/(1 + assum_infl)^YOS,
-         #PVPenWealth = DBWealth/(1 + ARR)^YOS * SepProb,
-         #PVCumWage = CumulativeWage/(1 + ARR)^YOS * SepProb,
-         
-         CBWealth = ifelse(DBWealth == DBEEBalance, CBBalance, PV_CB_Benefit),   #mimic DB members' behavior. This is to simplify the workforce projection done later.
-         Real_DBWealth = DBWealth/(1 + assum_infl)^YOS,
-         Real_CBWealth = CBWealth/(1 + assum_infl)^YOS,
-         PVFB_DB = PVFB(sep_rate_vec = SepRate, interest = ARR, value_vec = DBWealth),
-         PVFB_CB = PVFB(sep_rate_vec = SepRate, interest = ARR, value_vec = CBWealth),
-         PVFS = PVFS(remaining_prob_vec = RemainingProb, interest = ARR, sal_vec = Salary),
-         normal_cost_DB = PVFB_DB[YOS == 0] / PVFS[YOS == 0],
-         normal_cost_CB = PVFB_CB[YOS == 0] / PVFS[YOS == 0],
-         PVFNC_DB = PVFS * normal_cost_DB,
-         PVFNC_CB = PVFS * normal_cost_CB) %>%
+  mutate(#SepType = SeparationType(Age,YOS, Years),
+    #LumpSumPct = ifelse(EntryYear >= 2022, 0.2, 0.05),
+    #DBWealth = ifelse(SepType == 'Retirement', pmax(DBEEBalance,Max_PV_DB), 
+    #                  ifelse(SepType == 'Termination Vested', LumpSumPct*DBEEBalance + (1-LumpSumPct)*Max_PV_DB, DBEEBalance)),
+    
+    DBWealth = 0.2*DBEEBalance + 0.8*Max_PV_DB,
+    #DBWealth = pmax(DBEEBalance,Max_PV_DB),
+    #PenWealth = pmax(DBEEBalance,MaxBenefit),  #50% lump sum, 50% optimal retirement
+    #PenWealth = 0.5*(DBEEBalance + MaxBenefit),
+    RealPenWealth = DBWealth/(1 + assum_infl)^YOS,
+    #PVPenWealth = DBWealth/(1 + ARR)^YOS * SepProb,
+    #PVCumWage = CumulativeWage/(1 + ARR)^YOS * SepProb,
+    
+    #CBWealth = ifelse(DBWealth == DBEEBalance, CBBalance, PV_CB_Benefit),   #mimic DB members' behavior. This is to simplify the workforce projection done later.
+    Real_DBWealth = DBWealth/(1 + assum_infl)^YOS,
+    #Real_CBWealth = CBWealth/(1 + assum_infl)^YOS,
+    PVFB_DB = PVFB(sep_rate_vec = SepRate_DB, interest = ARR, value_vec = DBWealth),
+    #PVFB_CB = PVFB(sep_rate_vec = SepRate_DB, interest = ARR, value_vec = CBWealth),
+    PVFS = PVFS(remaining_prob_vec = RemainingProb_DB, interest = ARR, sal_vec = Salary),
+    normal_cost_DB = PVFB_DB[YOS == 0] / PVFS[YOS == 0],
+    #normal_cost_CB = PVFB_CB[YOS == 0] / PVFS[YOS == 0],
+    PVFNC_DB = PVFS * normal_cost_DB) %>%
   # replace(is.na(.), 0) %>%
   ungroup()
 
 
-#Calculate normal cost rate for each entry age in each entry year
 NormalCost <- FinalData %>% 
   filter(YOS == 0) %>% 
-  select(EntryYear, entry_age, normal_cost_DB, normal_cost_CB)
+  select(EntryYear, entry_age, normal_cost_DB)
 
 #Calculate the aggregate normal cost for current year (for testing purposes)
 NC_aggregate <- NormalCost %>% 
-  left_join(SalaryHeadCountData, by = c("EntryYear", "entry_age")) %>%
-  left_join(SalaryData %>% select(EntryYear, entry_age, Age, Salary), by = c("EntryYear", "entry_age", "Age", "Salary")) %>% 
-  filter(!is.na(HeadCount)) %>% 
-  summarise(normal_cost_aggregate_DB = sum(normal_cost_DB * Salary * HeadCount) / sum(Salary * HeadCount),
-            normal_cost_aggregate_CB = sum(normal_cost_CB * Salary * HeadCount) / sum(Salary * HeadCount))
-
-#Calculate the aggregate normal cost
-#NC_aggregate  
-################################
-
-
-# ####### DC Account Balance 
-# SalaryData2 <- SalaryData %>% 
-#   filter(entry_age == HiringAge) %>% 
-#   select(Age, YOS, start_sal, entry_age, HireType, salary_increase, Salary, RemainingProb) %>% 
-#   mutate(DC_EEContrib = Salary * DC_EE_cont,
-#          DC_ERContrib = Salary * DC_ER_cont,
-#          DC_Contrib = DC_EEContrib + DC_ERContrib,
-#          DC_balance = cumFV(DC_return, DC_Contrib),
-#          RealDC_balance = DC_balance/(1 + assum_infl)^YOS) %>% 
-#   left_join(SalaryData %>% select(Age, YOS, RealPenWealth), by = c("Age", "YOS")) %>% 
-#   mutate(RealHybridWealth = RealDC_balance + RealPenWealth)
-
-## Test benefit function
-# 
-# NC <- benefit_cal()
-# NC2 <- benefit_cal(DB_ARR = 0.06, DB_mult = 0.01)
-# DB_4 <- benefit_cal(output = "DB", DB_ARR = 0.04, ea = 22)
-# DB_7 <- benefit_cal(output = "DB", DB_ARR = 0.07, ea = 22)
-# DC <- benefit_cal(output = "DC", DCreturn = 0.06, ea = 22)
-# attri <- benefit_cal(output = "attrition", ea = 22)
-# 
-# 
-# test <- DB_4 %>%
-#   left_join(DB_7, by = "Age") %>%
-#   left_join(DC, by = "Age") %>%
-#   pivot_longer(cols = 2:4,
-#                names_to = "type",
-#                values_to = "wealth")
-# 
-# ggplot(test, aes(x = Age, y = wealth, col = type)) +
-#   geom_line()
-# 
-# ggplot(attri, aes(x = Age, y = RemainingProb)) +
-#   geom_line()
-##################################
+  left_join(SalaryEntry, by = c("entry_age")) %>%
+  left_join(SalaryData %>% select(EntryYear, entry_age, Age, Salary), by = c("EntryYear", "entry_age")) %>% 
+  filter(!is.na(Count)) %>% 
+  summarise(normal_cost_aggregate_DB = sum(normal_cost_DB * Salary * Count) / sum(Salary * Count))
