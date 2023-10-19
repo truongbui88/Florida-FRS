@@ -1,54 +1,53 @@
-rm(list = ls())
-library("readxl")
-library(tidyverse)
-library(dplyr)
-library(zoo)
-#setwd(getwd())
-source("utility_functions.R")
-
-FileName <- 'Florida.xlsx'
-EntryYear <- 1980:2052
-Years <- 1980:2154    #(why 2152? Because 120 - 18 + 2052 = 2154)
-YearStart <- 2022
-Age <- 18:120
-YOS <- 0:70
-#RetirementAge <- 20:120
-RetYear <- 2005:2154
-
-
-ModelPeriod <- 100    #Projection period (typically 30 years)
-MinAge <- 18          #Age of the typical youngest member
-MaxAge <- 120         #Max age from mortality assumptions
-YearStart <- 2022     #Year of the latest val report
-MinYear <- 1980       #No hard rule about this. Should get back to about 40 years from now.   
-MaxYear <- YearStart + ModelPeriod + MaxAge - MinAge
-
-EntryYear <- MinYear:(YearStart + ModelPeriod)
-RetYear <- MinYear:(YearStart + ModelPeriod)
-Years <- MinYear:MaxYear
-Age <- MinAge:MaxAge
-YOS <- 0:70
-RetirementAge <- Age
+# rm(list = ls())
+# library("readxl")
+# library(tidyverse)
+# library(dplyr)
+# library(zoo)
+# #setwd(getwd())
+# source("utility_functions.R")
+# 
+# FileName <- 'Florida.xlsx'
+# EntryYear <- 1980:2052
+# Years <- 1980:2154    #(why 2152? Because 120 - 18 + 2052 = 2154)
+# YearStart <- 2022
+# Age <- 18:120
+# YOS <- 0:70
+# #RetirementAge <- 20:120
+# RetYear <- 2005:2154
+# 
+# 
+# ModelPeriod <- 100    #Projection period (typically 30 years)
+# MinAge <- 18          #Age of the typical youngest member
+# MaxAge <- 120         #Max age from mortality assumptions
+# YearStart <- 2022     #Year of the latest val report
+# MinYear <- 1980       #No hard rule about this. Should get back to about 40 years from now.   
+# MaxYear <- YearStart + ModelPeriod + MaxAge - MinAge
+# 
+# EntryYear <- MinYear:(YearStart + ModelPeriod)
+# RetYear <- MinYear:(YearStart + ModelPeriod)
+# Years <- MinYear:MaxYear
+# Age <- MinAge:MaxAge
+# YOS <- 0:70
+# RetirementAge <- Age
 
 #Assigning individual  Variables
-model_inputs <- read_excel(FileName, sheet = 'Main')
-
-for(i in 1:nrow(model_inputs)){
-  if(!is.na(model_inputs[i,2])){
-    assign(as.character(model_inputs[i,2]),as.double(model_inputs[i,3]))
-  }
-}
+# model_inputs <- read_excel(FileName, sheet = 'Main')
+# 
+# for(i in 1:nrow(model_inputs)){
+#   if(!is.na(model_inputs[i,2])){
+#     assign(as.character(model_inputs[i,2]),as.double(model_inputs[i,3]))
+#   }
+# }
 
 #Import key data tables
-SurvivalRates <- read_excel(FileName, sheet = 'Mortality Rates')#Updated* (to RP-2014 General)
-MaleMP <- read_excel(FileName, sheet = 'MP-2018_Male') #Updated* (to MP-2019)
-FemaleMP <- read_excel(FileName, sheet = 'MP-2018_Female')#Updated* (to MP-2019)
-SalaryGrowth <- read_excel(FileName, sheet = "Salary Growth")#Updated* (How to combined YOS & AGE increases?)
-WithdrawalRates <- read_excel(FileName, sheet = 'Withdrawal Rates')#Updated*
-RetirementRates <- read_excel(FileName, sheet = 'Retirement Rates')#Updated*
+# SurvivalRates <- read_excel(FileName, sheet = 'Mortality Rates')#Updated* (to RP-2014 General)
+# MaleMP <- read_excel(FileName, sheet = 'MP-2018_Male') #Updated* (to MP-2019)
+# FemaleMP <- read_excel(FileName, sheet = 'MP-2018_Female')#Updated* (to MP-2019)
+# SalaryGrowth <- read_excel(FileName, sheet = "Salary Growth")#Updated* (How to combined YOS & AGE increases?)
+# WithdrawalRates <- read_excel(FileName, sheet = 'Withdrawal Rates')#Updated*
+# RetirementRates <- read_excel(FileName, sheet = 'Retirement Rates')#Updated*
 
-SalaryMatrix <- read_excel(FileName, sheet = "Salary Distribution Regular")
-HeadCountMatrix <- read_excel(FileName, sheet = "HeadCount Distribution Regular")
+
 
 
 SalaryMatrix_long <- SalaryMatrix %>% 
@@ -83,8 +82,8 @@ IsRetirementEligible_Normal <- function(Age, YOS, EntryYear){
 }
 
 IsRetirementEligible_Early <- function(Age, YOS, EntryYear){
-  Check_Early_Tier1 = ifelse((Age >= 62 & YOS >= 6), TRUE, FALSE)
-  Check_Early_Tier2 = ifelse((Age >= 65 & YOS >= 8), TRUE, FALSE)
+  Check_Early_Tier1 = ifelse((Age >= 62 - 19 & YOS >= 6), TRUE, FALSE)
+  Check_Early_Tier2 = ifelse((Age >= 65 - 19 & YOS >= 8), TRUE, FALSE)
   
   Check = ifelse(EntryYear >= 2011, Check_Early_Tier2, Check_Early_Tier1)
   return(Check)
@@ -109,9 +108,8 @@ SeparationType <- function(Age, YOS, EntryYear){
   Vested_Tier1 = ifelse(YOS >= 6, 'Termination Vested', 'Termination Non-Vested')
   Vested_Tier2 = ifelse(YOS >= 8, 'Termination Vested', 'Termination Non-Vested')
   
-  Check = ifelse(IsRetirementEligible_Normal(Age, YOS, EntryYear) == T, 'Normal Retirement',
-                 ifelse(IsRetirementEligible_Early(Age, YOS, EntryYear) == T, 'Early Retirement',
-                        ifelse(EntryYear < 2011, Vested_Tier1, Vested_Tier2)))
+  Check = ifelse(IsRetirementEligible(Age, YOS, EntryYear) == T, "Retirement",
+                        ifelse(EntryYear < 2011, Vested_Tier1, Vested_Tier2))
   
   return(Check)
 }
@@ -119,13 +117,13 @@ SeparationType <- function(Age, YOS, EntryYear){
 ##############################################################################################################################
 
 #Custom function to calculate cumulative future values
-cumFV <- function(interest, cashflow){
-  cumvalue <- double(length = length(cashflow))
-  for (i in 2:length(cumvalue)) {
-    cumvalue[i] <- cumvalue[i - 1]*(1 + interest) + cashflow[i - 1]
-  }
-  return(cumvalue)
-}
+# cumFV <- function(interest, cashflow){
+#   cumvalue <- double(length = length(cashflow))
+#   for (i in 2:length(cumvalue)) {
+#     cumvalue[i] <- cumvalue[i - 1]*(1 + interest) + cashflow[i - 1]
+#   }
+#   return(cumvalue)
+# }
 
 LinearInterpolation <- function(Data,AgeStart,AgeEnd,Columns,Increment){
   TempMatrix <- matrix(0,nrow= (AgeEnd - AgeStart + 1),Columns)
@@ -168,7 +166,7 @@ CompoundSalaryIncrease <- function(Data){
 }
 
 ##############################################################################################################################
-
+#Transform base mortality rates and mortality improvement rates
 MaleMP <- MaleMP %>% 
   pivot_longer(-Age, names_to = "Years", values_to = "MP_male") %>% 
   mutate(Years = as.numeric(Years))
@@ -181,13 +179,10 @@ MaleMP_ultimate <- MaleMP %>%        #ultimate rates = rates for the last year i
 MaleMP_final <- expand_grid(Age, Years = 1951:MaxYear) %>% 
   left_join(MaleMP, by = c("Age", "Years")) %>% 
   left_join(MaleMP_ultimate, by = "Age") %>% 
-  mutate(
-    # MP_final_male = ifelse(Years > max(MaleMP$Years), MP_ultimate_male, MP_male)   
-    #Since the plan assumes "immediate convergence" of MP rates, the "ultimate rates" are used for all years
-    MP_final_male = MP_ultimate_male) %>% 
+  mutate(MP_final_male = ifelse(Years > max(MaleMP$Years), MP_ultimate_male, MP_male)) %>% 
   group_by(Age) %>% 
   mutate(MPcumprod_male_raw = cumprod(1 - MP_final_male),
-         MPcumprod_male_adj = MPcumprod_male_raw / MPcumprod_male_raw[Years == 2010]) %>%   #Adjust the mort improvement rates for the 2014 base year
+         MPcumprod_male_adj = MPcumprod_male_raw / MPcumprod_male_raw[Years == 2010]) %>%   #Adjust the mort improvement rates for the 2010 base year
   ungroup()
 
 
@@ -203,11 +198,7 @@ FemaleMP_ultimate <- FemaleMP %>%
 FemaleMP_final <- expand_grid(Age, Years = 1951:MaxYear) %>% 
   left_join(FemaleMP, by = c("Age", "Years")) %>% 
   left_join(FemaleMP_ultimate, by = "Age") %>% 
-  mutate(
-    # MP_final_female = ifelse(Years > max(FemaleMP$Years), MP_ultimate_female, MP_female)
-    #Since the plan assumes "immediate convergence" of MP rates, the "ultimate rates" are used for all years
-    MP_final_female = MP_ultimate_female
-  ) %>%
+  mutate(MP_final_female = ifelse(Years > max(FemaleMP$Years), MP_ultimate_female, MP_female)) %>%
   group_by(Age) %>% 
   mutate(MPcumprod_female_raw = cumprod(1 - MP_final_female),
          MPcumprod_female_adj = MPcumprod_female_raw / MPcumprod_female_raw[Years == 2010]) %>% 
@@ -226,13 +217,14 @@ MortalityTable <- MortalityTable_int %>%
   left_join(MaleMP_final, by = c("Age", "Years")) %>% 
   left_join(FemaleMP_final, by = c("Age", "Years")) %>% 
   
-  #MPcumprod is the cumulative product of (1 - MP rates), starting from 2011. We use it later so make life easy and calculate now
-  mutate(RetirementCond = IsRetirementEligible(Age, YOS, EntryYear),
-    mort_male = ifelse(RetirementCond == T, Pub2010_healthy_retiree_male, 
-                       Pub2010_employee_male * ScaleMultiple) * MPcumprod_male_adj, 
-    mort_female = ifelse(RetirementCond == T, Pub2010_healthy_retiree_female, 
-                         Pub2010_employee_female * ScaleMultiple) * MPcumprod_female_adj,
-    mort = (mort_male + mort_female)/2)
+  #Since early retirement eligibility can happen very early, we switch to normal retirement eligibility to accommodate the retiree's mortality rates
+  #Because even normal retirement can happen "too early" in some cases, we use employee's mort rates when retiree's mort rates are not available.
+  mutate(RetirementCond = IsRetirementEligible_Normal(Age, YOS, EntryYear),
+         mort_male = ifelse(RetirementCond == T & !is.na(Pub2010_healthy_retiree_male), Pub2010_healthy_retiree_male, 
+                            Pub2010_employee_male) * MPcumprod_male_adj, 
+         mort_female = ifelse(RetirementCond == T & !is.na(Pub2010_healthy_retiree_female), Pub2010_healthy_retiree_female, 
+                              Pub2010_employee_female) * MPcumprod_female_adj,
+         mort = (mort_male + mort_female)/2)
 
 #filter out the necessary variables
 MortalityTable <- MortalityTable %>% 
@@ -245,8 +237,11 @@ MortalityTable_retire <- expand_grid(Age = Age[Age >= 40], Years = Years[Years >
   left_join(MaleMP_final, by = c("Age", "Years")) %>% 
   left_join(FemaleMP_final, by = c("Age", "Years")) %>% 
   mutate(base_age = Age - (Years - YearStart),
-         mort_male = Pub2010_employee_male * MPcumprod_male_adj,
-         mort_female = Pub2010_employee_female * MPcumprod_female_adj,
+         #use employee's mort rates when retiree's mort rates are not available
+         base_mort_male = ifelse(is.na(Pub2010_healthy_retiree_male), Pub2010_employee_male, Pub2010_healthy_retiree_male),
+         base_mort_female = ifelse(is.na(Pub2010_healthy_retiree_female), Pub2010_employee_female, Pub2010_healthy_retiree_female),
+         mort_male = base_mort_male * MPcumprod_male_adj,
+         mort_female = base_mort_female * MPcumprod_female_adj,
          mort = (mort_male + mort_female)/2) %>% 
   select(base_age, Age, Years, mort) %>% 
   filter(base_age >= 40) %>% 
@@ -255,10 +250,8 @@ MortalityTable_retire <- expand_grid(Age = Age[Age >= 40], Years = Years[Years >
 ##############################################################################################################################
 
 #Separation Rates
-SeparationRates <- expand_grid(EntryYear, Age, YOS) 
-SeparationRates <- SeparationRates %>%
-  mutate(entry_age = Age - YOS,
-         Years = EntryYear + YOS) %>% 
+SeparationRates <- expand_grid(EntryYear, Age, YOS) %>% 
+  mutate(entry_age = Age - YOS) %>% 
   filter(entry_age %in% SalaryEntry$entry_age) %>% 
   arrange(EntryYear, entry_age, Age) %>% 
   left_join(WithdrawalRates, by = "YOS") %>%
@@ -506,3 +499,6 @@ NC_aggregate <- NormalCost %>%
   left_join(SalaryData %>% select(EntryYear, entry_age, Age, Salary), by = c("EntryYear", "entry_age")) %>% 
   filter(!is.na(Count)) %>% 
   summarise(normal_cost_aggregate_DB = sum(normal_cost_DB * Salary * Count) / sum(Salary * Count))
+
+
+
